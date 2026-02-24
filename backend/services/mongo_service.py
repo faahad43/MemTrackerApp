@@ -23,6 +23,6 @@ class MongoService:
             result = self.collection.insert_one(event_data)
             return result.inserted_id
         except Exception as e:
-            print(f"❌ Failed to log event: {e}")
+            print(f" Failed to log event: {e}")
             return None
 mongo_service = MongoService()
