@@ -9,6 +9,9 @@ class MongoService:
         # Pull details from your .env file
         uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
         db_name = os.getenv("MONGO_DB_NAME", "MemTracker")
+        self.client = None
+        self.db = None
+        self.collection = None
         try:
             self.client = MongoClient(uri)
             self.db = self.client[db_name]
@@ -18,8 +21,13 @@ class MongoService:
         except Exception as e:
             print(f"MongoDB Connection Error: {e}")
 
+    def is_connected(self):
+        return self.collection is not None
+
     def log_event(self, event_data):
         try:
+            if not self.collection:
+                return None
             result = self.collection.insert_one(event_data)
             return result.inserted_id
         except Exception as e:

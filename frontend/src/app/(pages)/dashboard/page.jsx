@@ -1,16 +1,19 @@
 'use client'
 import React, { useState } from 'react'
-import { motion } from 'framer-motion'
-import { FiUpload, FiVideo, FiPlay, FiX, FiCheck } from 'react-icons/fi'
+import { motion, AnimatePresence } from 'framer-motion'
+import { FiUpload, FiVideo, FiPlay, FiX, FiCheck, FiClock, FiUsers, FiActivity, FiAlertCircle } from 'react-icons/fi'
 import { MdVideoLibrary } from 'react-icons/md'
 import { showSuccessToast, showErrorToast, showLoadingToast, dismissToast } from '@/utils/toast'
+import { processVideoFile } from '@/utils/backendApi'
 
 export default function UploadVideoPage() {
-  const [activeTab, setActiveTab] = useState('upload') // 'upload' or 'rtsp'
+  const [activeTab, setActiveTab] = useState('upload')
   const [uploadedFile, setUploadedFile] = useState(null)
   const [rtspUrl, setRtspUrl] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [previewUrl, setPreviewUrl] = useState(null)
+  const [results, setResults] = useState(null)
+  const [progress, setProgress] = useState(0)
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0]
@@ -19,7 +22,13 @@ export default function UploadVideoPage() {
         showErrorToast('Please upload a valid video file')
         return
       }
+      // 500MB limit
+      if (file.size > 500 * 1024 * 1024) {
+        showErrorToast('File too large. Maximum size is 500MB')
+        return
+      }
       setUploadedFile(file)
+      setResults(null)
       const url = URL.createObjectURL(file)
       setPreviewUrl(url)
       showSuccessToast('Video uploaded successfully')
@@ -34,7 +43,12 @@ export default function UploadVideoPage() {
         showErrorToast('Please upload a valid video file')
         return
       }
+      if (file.size > 500 * 1024 * 1024) {
+        showErrorToast('File too large. Maximum size is 500MB')
+        return
+      }
       setUploadedFile(file)
+      setResults(null)
       const url = URL.createObjectURL(file)
       setPreviewUrl(url)
       showSuccessToast('Video uploaded successfully')
@@ -47,6 +61,8 @@ export default function UploadVideoPage() {
 
   const handleRemoveFile = () => {
     setUploadedFile(null)
+    setResults(null)
+    setProgress(0)
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl)
       setPreviewUrl(null)
@@ -64,23 +80,66 @@ export default function UploadVideoPage() {
     }
 
     setIsProcessing(true)
-    const loadingToastId = showLoadingToast('Starting analysis...')
+    setResults(null)
+    setProgress(10)
+    const loadingToastId = showLoadingToast('Uploading video & starting analysis...')
 
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      
+      if (activeTab === 'upload') {
+        setProgress(30)
+
+        const data = await processVideoFile(uploadedFile, (progressEvent) => {
+          const pct = Math.round((progressEvent.loaded * 30) / progressEvent.total) + 30
+          setProgress(Math.min(pct, 60))
+        })
+
+        setProgress(100)
+        dismissToast(loadingToastId)
+
+        if (data.status === 'completed') {
+          setResults(data)
+          showSuccessToast(`Analysis complete! Found ${data.stats.total_activities} activities`)
+        } else if (data.error) {
+          showErrorToast(data.error)
+        }
+      } else {
+        // RTSP - not yet implemented in backend
+        dismissToast(loadingToastId)
+        showErrorToast('RTSP stream processing is coming soon')
+      }
+    } catch (err) {
       dismissToast(loadingToastId)
-      showSuccessToast('Analysis started successfully!')
-      
-      // Here you would send the video/RTSP URL to the backend
-      // For now, just simulating
-    } catch {
-      dismissToast(loadingToastId)
-      showErrorToast('Failed to start analysis')
+      if (err.response?.status === 413) {
+        showErrorToast('File too large. Maximum size is 500MB')
+      } else {
+        showErrorToast(err.response?.data?.error || 'Failed to process video')
+      }
     } finally {
       setIsProcessing(false)
     }
+  }
+
+  // Group activities by track_id for summary
+  const getActivitySummary = () => {
+    if (!results?.activities) return {}
+    const summary = {}
+    for (const act of results.activities) {
+      const label = act.activity
+      if (!summary[label]) summary[label] = { count: 0, totalConf: 0 }
+      summary[label].count++
+      summary[label].totalConf += act.confidence
+    }
+    // Calculate average confidence
+    for (const key of Object.keys(summary)) {
+      summary[key].avgConfidence = (summary[key].totalConf / summary[key].count * 100).toFixed(1)
+    }
+    return summary
+  }
+
+  // Get unique tracked persons
+  const getUniquePersons = () => {
+    if (!results?.activities) return 0
+    return new Set(results.activities.map(a => a.track_id)).size
   }
 
   return (
@@ -198,6 +257,24 @@ export default function UploadVideoPage() {
                     <FiPlay size={20} />
                     {isProcessing ? 'Processing...' : 'Start Analysis'}
                   </button>
+
+                  {/* Progress Bar */}
+                  {isProcessing && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm text-gray-600">
+                        <span>Processing video...</span>
+                        <span>{progress}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                        <motion.div
+                          className="h-full bg-gradient-to-r from-cyan-500 to-blue-600 rounded-full"
+                          initial={{ width: 0 }}
+                          animate={{ width: `${progress}%` }}
+                          transition={{ duration: 0.5 }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </motion.div>
               )}
             </div>
@@ -263,6 +340,121 @@ export default function UploadVideoPage() {
             </motion.div>
           )}
         </div>
+
+        {/* Results Panel */}
+        <AnimatePresence>
+          {results && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="mt-8 space-y-6"
+            >
+              {/* Stats Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white rounded-lg shadow p-5">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center">
+                      <FiClock className="text-cyan-600" size={20} />
+                    </div>
+                    <span className="text-sm text-gray-500">Processing Time</span>
+                  </div>
+                  <p className="text-2xl font-bold text-gray-900">{results.stats.processing_time}s</p>
+                </div>
+                <div className="bg-white rounded-lg shadow p-5">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                      <FiVideo className="text-blue-600" size={20} />
+                    </div>
+                    <span className="text-sm text-gray-500">Frames Processed</span>
+                  </div>
+                  <p className="text-2xl font-bold text-gray-900">{results.stats.processed_frames}<span className="text-sm text-gray-400 font-normal"> / {results.stats.total_frames}</span></p>
+                </div>
+                <div className="bg-white rounded-lg shadow p-5">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                      <FiUsers className="text-purple-600" size={20} />
+                    </div>
+                    <span className="text-sm text-gray-500">Persons Tracked</span>
+                  </div>
+                  <p className="text-2xl font-bold text-gray-900">{getUniquePersons()}</p>
+                </div>
+                <div className="bg-white rounded-lg shadow p-5">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
+                      <FiActivity className="text-green-600" size={20} />
+                    </div>
+                    <span className="text-sm text-gray-500">Activities Found</span>
+                  </div>
+                  <p className="text-2xl font-bold text-gray-900">{results.stats.total_activities}</p>
+                </div>
+              </div>
+
+              {/* Activity Summary */}
+              {Object.keys(getActivitySummary()).length > 0 && (
+                <div className="bg-white rounded-lg shadow p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Activity Summary</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    {Object.entries(getActivitySummary()).map(([label, data]) => (
+                      <div key={label} className="bg-gray-50 rounded-lg p-3 text-center">
+                        <p className="text-sm font-medium text-gray-700 capitalize">{label}</p>
+                        <p className="text-xl font-bold text-gray-900">{data.count}</p>
+                        <p className="text-xs text-gray-500">{data.avgConfidence}% conf</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Activity Log Table */}
+              {results.activities?.length > 0 && (
+                <div className="bg-white rounded-lg shadow overflow-hidden">
+                  <div className="p-6 border-b border-gray-200">
+                    <h3 className="text-lg font-semibold text-gray-900">Activity Log</h3>
+                    <p className="text-sm text-gray-500 mt-1">Detailed list of all detected activities</p>
+                  </div>
+                  <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Track ID</th>
+                          <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Activity</th>
+                          <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Confidence</th>
+                          <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Frame</th>
+                          <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {results.activities.map((act, idx) => (
+                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                            <td className="px-6 py-3 text-sm text-gray-900 font-medium">#{act.track_id}</td>
+                            <td className="px-6 py-3">
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-cyan-100 text-cyan-800 capitalize">
+                                {act.activity}
+                              </span>
+                            </td>
+                            <td className="px-6 py-3 text-sm text-gray-600">{(act.confidence * 100).toFixed(1)}%</td>
+                            <td className="px-6 py-3 text-sm text-gray-600">{act.frame_number}</td>
+                            <td className="px-6 py-3 text-sm text-gray-600">{act.video_time}s</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* No activities found */}
+              {results.activities?.length === 0 && (
+                <div className="bg-white rounded-lg shadow p-8 text-center">
+                  <FiAlertCircle className="mx-auto mb-3 text-yellow-500" size={40} />
+                  <p className="text-gray-700 font-medium">No activities detected</p>
+                  <p className="text-sm text-gray-500 mt-1">Try a video with people performing visible activities</p>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Info Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8">
